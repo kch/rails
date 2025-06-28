@@ -14,6 +14,48 @@ class Rails::MailersController < Rails::ApplicationController # :nodoc:
 
   content_security_policy(false)
 
+  class LRUCache < Hash
+    def initialize(max_size: 10, expires_in: 10.minutes)
+      super()
+      @max_size = max_size
+      @expires_in = expires_in
+      @timestamps = {}
+    end
+
+    def []=(key, value)
+      purge_expired!
+      evict_if_needed!
+      @timestamps[key] = Time.now
+      super
+    end
+
+    def [](key)
+      purge_expired!
+      return unless key?(key)
+      @timestamps[key] = Time.now
+      super
+    end
+
+    def delete(key)
+      @timestamps.delete(key)
+      super
+    end
+
+    private
+      def purge_expired!
+        now = Time.now
+        @timestamps.select { |_, t| now - t > @expires_in }.keys.each { |k| delete(k) }
+      end
+
+      def evict_if_needed!
+        return if size < @max_size
+        lru_key = @timestamps.min_by { |_, t| t }&.first
+        delete(lru_key) if lru_key
+      end
+  end
+  @@emails ||= LRUCache.new
+
+
   def index
     @previews = ActionMailer::Preview.all
     @page_title = "Action Mailer Previews"
@@ -38,7 +80,6 @@ class Rails::MailersController < Rails::ApplicationController # :nodoc:
 
       if @preview.email_exists?(@email_action)
         @page_title = "Mailer Preview for #{@preview.preview_name}##{@email_action}"
-        @@emails ||= {}
         @email = params[:email_id] && @@emails[params[:email_id]] || @preview.call(@email_action, params)
         @email_id = @preview.object_id.to_s
         @@emails[@email_id] = @email
